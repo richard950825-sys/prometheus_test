@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+evo/__init__.py
+evo/__main__.py
+evo/core.py
+evo/llm_gemini.py
+evo/main.py
+evo/models.py
+evo.egg-info/PKG-INFO
+evo.egg-info/SOURCES.txt
+evo.egg-info/dependency_links.txt
+evo.egg-info/entry_points.txt
+evo.egg-info/requires.txt
+evo.egg-info/top_level.txt

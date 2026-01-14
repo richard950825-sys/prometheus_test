@@ -1,0 +1,37 @@
+{
+  "project_name": "demo6_project",
+  "goal": "Explain the system goal here",
+  "features": [
+    "Feature A",
+    "Feature B"
+  ],
+  "traffic": {
+    "peak_rps": 5000,
+    "avg_rps": 800,
+    "read_write_ratio": "70:30",
+    "payload_size_kb": 2
+  },
+  "slo": {
+    "p95_latency_ms": 200,
+    "error_rate": 0.01,
+    "availability": 0.999
+  },
+  "constraints": {
+    "data_residency": "EU",
+    "compliance": [
+      "GDPR"
+    ],
+    "monthly_budget_usd": 20000,
+    "team_size": 2,
+    "time_to_mvp_weeks": 4
+  },
+  "preferences": {
+    "prefer_managed_services": true,
+    "prefer_kubernetes": false,
+    "languages": [
+      "python",
+      "node"
+    ],
+    "cloud": "gcp|aws|azure|any"
+  }
+}

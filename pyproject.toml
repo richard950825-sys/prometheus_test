@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evo"
+version = "0.1.0"
+description = "A CLI tool for session-based generation and auditing"
+authors = [{name = "Antigravity", email = "assistant@example.com"}]
+dependencies = [
+    "typer[all]>=0.9.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "google-genai",
+    "python-dotenv"
+]
+requires-python = ">=3.11"
+
+[project.scripts]
+evo = "evo.main:app"
+
+[tool.setuptools]
+packages = ["evo"]

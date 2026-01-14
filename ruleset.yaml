@@ -1,0 +1,64 @@
+rules:
+  # ---------- HARD: Essential Requirements ----------
+  - id: "H001"
+    description: "Must define clear SLOs: p95 latency, error rate, availability"
+    severity: "HARD"
+    condition: "proposal.slo.p95_latency_ms is not None and proposal.slo.error_rate is not None and proposal.slo.availability is not None"
+
+  - id: "H002"
+    description: "Must include acceptance criteria: latency.p95_ms and errors.rate"
+    severity: "HARD"
+    condition: "acceptance_has_metrics(['latency.p95_ms', 'errors.rate'])"
+
+  - id: "H003"
+    description: "Must provide load test plan: Tool, Duration, Target RPS"
+    severity: "HARD"
+    condition: "proposal.experiments.load_test.tool and proposal.experiments.load_test.duration_s and proposal.experiments.load_test.target_rps"
+
+  - id: "H004"
+    description: "Must define core components: API, DB, Cache, Queue"
+    severity: "HARD"
+    condition: "proposal.architecture.components.api and proposal.architecture.components.db"
+
+  - id: "H005"
+    description: "Must define reliability config: Timeouts, Retries, Idempotency"
+    severity: "HARD"
+    condition: "proposal.architecture.reliability.timeouts_ms and proposal.architecture.reliability.retries and proposal.architecture.reliability.idempotency"
+
+  # ---------- RISK: Potential Issues ----------
+  - id: "R001"
+    description: "High retry count (>=3) may cause retry storms"
+    severity: "RISK"
+    condition: "get_retry_max_attempts() >= 3"
+    fix_suggestion: "将 retries.max_attempts 调整为 1 或 2，并开启 exponential backoff；对关键路径建议 1"
+
+  - id: "R002"
+    description: "Client timeout <= Server timeout implies request accumulation risk"
+    severity: "RISK"
+    condition: "get_timeout('client') <= get_timeout('server')"
+    fix_suggestion: "把 client timeout 设为 server timeout 的 1.5~2 倍（例如 client=1500ms, server=800ms）"
+
+  - id: "R003"
+    description: "Using Queue without documented risks indicates missing complexity governance"
+    severity: "RISK"
+    condition: "queue_used_requires_risks()"
+    fix_suggestion: "在 risks 列表中补充关于 Queue 的风险说明（如堆积、丢失），并制定监控方案"
+  
+  - id: "R005"
+    description: "Retries enabled without idempotency support leads to double-write risks"
+    severity: "RISK"
+    condition: "proposal.architecture.reliability.idempotency == 'not_supported' and get_retry_max_attempts() > 0"
+    fix_suggestion: "启用 idempotency='required' 或 'recommended'，或者将重试次数设为 0"
+
+  # ---------- ADVICE: Best Practices ----------
+  - id: "A001"
+    description: "Suggestion: Add Chaos Engineering tests (e.g. pod_kill, network_delay)"
+    severity: "ADVICE"
+    condition: "has_meaningful_chaos_test() == False"
+    fix_suggestion: "在 experiments.chaos_test 中增加至少一项故障注入测试（如 pod_kill）"
+
+  - id: "A002"
+    description: "Suggestion: Consider adding Cache if currently None"
+    severity: "ADVICE"
+    condition: "is_cache_missing()"
+    fix_suggestion: "在 architecture.components 中增加 cache 组件（如 type='redis'），以减轻数据库压力"
