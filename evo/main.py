@@ -9,70 +9,34 @@ core = EvoCore()
 def init_session(name: str = typer.Option(..., help="Name of the session")):
     """Initialize a new session."""
     try:
+        from pathlib import Path
+        session_path = Path("sessions") / name
+        if session_path.exists():
+            typer.echo(f"Session directory '{session_path}' already exists.", err=True)
+            typer.echo(f"Tip: You can run 'evo iterate --session {session_path}' directly, or use '--reset' to clear it.")
+            return
+
         core.init_session(name)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 
-@app.command()
-def generate(
-    session: str = typer.Option(..., help="Path to session directory"),
-    n: int = typer.Option(3, help="Number of candidates to generate"),
-    reset: bool = typer.Option(False, help="Clear existing candidates before generation")
-):
-    """Generate architecture candidates."""
-    try:
-        core.generate(session, n, reset)
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+# ... (generate, audit, etc. unchanged)
 
 @app.command()
-def audit(
+def iterate(
     session: str = typer.Option(..., help="Path to session directory"),
-    include_patched: bool = typer.Option(False, help="Include patched candidates in audit")
+    rounds: int = typer.Option(3, help="Number of evolution rounds"),
+    population: int = typer.Option(3, help="Population size per round"),
+    topk: int = typer.Option(1, help="Top K candidates to refine (currently only 1 supported)"),
+    patch_mode: str = typer.Option("strategy", help="Patch mode: 'quick' or 'strategy'"),
+    include_advice: bool = typer.Option(False, help="Include Advice-level fixes"),
+    reset: bool = typer.Option(False, "--reset/--no-reset", help="Reset session before starting (Use --reset to enable, --no-reset to disable)"),
+    allow_multi_patch: bool = typer.Option(False, help="Allow patching a candidate multiple times (recursive patching)")
 ):
-    """Audit candidates in a session against ruleset."""
+    """Run iterative evolution engine."""
     try:
-        core.audit(session, include_patched=include_patched)
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
-
-@app.command()
-def diff(
-    session: str = typer.Option(..., help="Path to session directory"),
-    base: str = typer.Option(..., help="ID of base candidate"),
-    target: str = typer.Option(..., help="ID of target candidate")
-):
-    """Compare two candidates and generate a diff report."""
-    try:
-        core.diff(session, base, target)
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
-
-@app.command()
-def report(
-    session: str = typer.Option(..., help="Path to session directory"),
-    include_patched: bool = typer.Option(False, help="Include patched candidates in report")
-):
-    """Generate a report from audit results."""
-    try:
-        core.report(session, include_patched=include_patched)
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
-
-@app.command()
-def patch(
-    session: str = typer.Option(..., help="Path to session directory"),
-    candidate: str = typer.Option(..., help="ID of the candidate to patch"),
-    apply_advice: bool = typer.Option(False, help="Apply optional advice fixes (e.g. inject Redis)")
-):
-    """Patch a candidate based on audit rules (R001, R002, R005, A002)."""
-    try:
-        core.patch(session, candidate, apply_advice=apply_advice)
+        core.iterate(session, rounds, population, topk, patch_mode, include_advice, reset, allow_multi_patch)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)

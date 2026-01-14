@@ -49,6 +49,21 @@ Creates a Markdown report in the session directory.
 python -m evo report --session sessions/demo
 ```
 
+### 5. Iterative Evolution (New!)
+Run automated multi-round evolution with patching and tie-breaking.
+
+```bash
+# Start a fresh iteration (clears previous data in session)
+evo iterate --session sessions/demo_iter --reset
+
+# Resume or run without clearing
+evo iterate --session sessions/demo_iter
+```
+
+**Note on Flags**:
+- `--reset`: Use this flag to enable reset (clear session candidates). Omit it to disable.
+- `--no-reset`: Explicitly disable reset (optional).
+
 ## Configuration
 
 Modify `ruleset.yaml` to change audit rules.

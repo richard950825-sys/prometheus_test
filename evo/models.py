@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any, Union, Literal
+from typing import List, Optional, Dict, Any, Union, Literal, Tuple
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -62,9 +62,22 @@ class Risk(BaseModel):
     title: str
     mitigation: str
 
+class Compliance(BaseModel):
+    gdpr_compliant: bool
+    data_residency_statement: Optional[str] = None
+    notes: Optional[str] = None
+
+class CostEstimate(BaseModel):
+    monthly_cost_usd: Optional[int] = None
+    estimate_range_usd_per_month: Optional[Tuple[int, int]] = None
+    estimate_band: Literal["low", "medium", "high"] = "medium"
+    confidence: Literal["low", "medium", "high"] = "low"
+    notes: Optional[str] = None
+
 class Proposal(BaseModel):
     title: str
     summary: str
+    critical_paths: List[str] = Field(default_factory=list)
     architecture: Architecture
     slo: SLO
     acceptance: Acceptance
@@ -73,6 +86,8 @@ class Proposal(BaseModel):
     normalization_notes: List[str] = Field(default_factory=list)
     patch_notes: List[str] = Field(default_factory=list)
     strategy: Optional[str] = None
+    compliance: Optional[Compliance] = None
+    estimates: Optional[CostEstimate] = None
 
 # --- Core Models ---
 

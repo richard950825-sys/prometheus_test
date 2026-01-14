@@ -240,10 +240,20 @@ class EvoCore:
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-    def patch(self, session_path: str, candidate_id: str, apply_advice: bool = False):
+    def patch(self, session_path: str, candidate_id: str, apply_advice: bool = False, mode: str = "quick"):
         session_dir = Path(session_path)
         candidates_dir = session_dir / "candidates"
         cand_file = candidates_dir / f"cand_{candidate_id}.json"
+        
+        # Load Requirements for Strategy Context
+        req_file = session_dir / "requirements.json"
+        requirements = {}
+        if not req_file.exists():
+             # Fallback to root requirements if session one missing
+             req_file = Path("requirements.json")
+        if req_file.exists():
+            with open(req_file, "r", encoding="utf-8") as f:
+                requirements = json.load(f)
         
         if not cand_file.exists():
              raise FileNotFoundError(f"Candidate file not found: {cand_file}")
@@ -258,8 +268,25 @@ class EvoCore:
 
         notes = []
         
+        # --- Helper: Check Cache Missing ---
+        def is_cache_missing(prop):
+            if not prop.architecture or not prop.architecture.components: return True
+            c = prop.architecture.components.cache
+            if c is None: return True
+            if isinstance(c, dict): return c.get("type", "none") == "none"
+            return getattr(c, "type", "none") == "none"
+
+        # --- Helper: Check Queue Missing ---
+        def is_queue_missing(prop):
+            if not prop.architecture or not prop.architecture.components: return True
+            q = prop.architecture.components.queue
+            if q is None: return True
+            if isinstance(q, dict): return q.get("type", "none") == "none"
+            return getattr(q, "type", "none") == "none"
+
+        # --- Basic Fixes (Quick Mode) ---
+        
         # R001 Fix: High Retries
-        # Logic: if max_attempts >= 3 -> set to 1, backoff=exponential
         if p.architecture and p.architecture.reliability:
             rel = p.architecture.reliability
             retries = rel.retries
@@ -268,12 +295,10 @@ class EvoCore:
                 current_attempts = int(retries.get("max_attempts", 0))
             
             if current_attempts >= 3:
-                # Apply fix
                 rel.retries = {"max_attempts": 1, "backoff": "exponential"}
                 notes.append("Fixed R001: Set retries.max_attempts to 1 and backoff to exponential.")
         
-        # R002 Fix: Client Timeout <= Server Timeout
-        # Logic: client = max(server + 300, server * 2)
+        # R002 Fix: Client Timeout
         if p.architecture and p.architecture.reliability:
             rel = p.architecture.reliability
             timeouts = rel.timeouts_ms
@@ -285,9 +310,9 @@ class EvoCore:
                 timeouts["client"] = new_client
                 notes.append(f"Fixed R002: Increased client timeout to {new_client}ms (> server timeout {server_to}ms).")
         
-        
         # R005 Fix: Retries without Idempotency
         # Logic: if retries > 0 and idempotency == 'not_supported' -> set to 'recommended', add Risk
+        r005_triggered = False
         if p.architecture and p.architecture.reliability:
             rel = p.architecture.reliability
             retries = rel.retries
@@ -297,6 +322,7 @@ class EvoCore:
             
             idempotency = rel.idempotency
             if attempts > 0 and idempotency == "not_supported":
+                r005_triggered = True
                 rel.idempotency = "recommended"
                 from .models import Risk
                 p.risks.append(Risk(
@@ -305,39 +331,119 @@ class EvoCore:
                 ))
                 notes.append("Fixed R005: Set idempotency to 'recommended' and added Risk due to active retries.")
 
-        # A002 Fix: Cache Missing
-        # Logic: If cache missing, add Risk. If apply_advice is True, inject Redis.
-        if p.architecture and p.architecture.components:
-             # Check if cache missing (Logic from audit: None or type=='none')
-             cache = p.architecture.components.cache
-             is_missing = False
-             if cache is None: is_missing = True
-             elif isinstance(cache, dict) and cache.get("type", "none") == "none": is_missing = True
-             elif hasattr(cache, "type") and cache.type == "none": is_missing = True
+        # C001 Fix: Data Residency Mismatch
+        residency_req = requirements.get("constraints", {}).get("data_residency")
+        if residency_req and residency_req.lower() in ["eu", "europe"]:
+            # Check compliance
+            needs_c001 = False
+            if not p.compliance: needs_c001 = True
+            elif not p.compliance.data_residency_statement: needs_c001 = True
+            elif residency_req.lower() not in p.compliance.data_residency_statement.lower(): needs_c001 = True
+            
+            if needs_c001:
+                # Initialize compliance object if missing
+                if not p.compliance:
+                    # from .models import Compliance
+                    # To avoid strict import issues inside method if not imported globally
+                    # Rely on Dict-like assignment if model permits, but we are using Pydantic models
+                    # It's better to instantiate Compliance model
+                    from .models import Compliance
+                    p.compliance = Compliance(gdpr_compliant=True, data_residency_statement="")
+                
+                new_stmt = f"All customer data will be stored and processed in {residency_req} regions only."
+                p.compliance.data_residency_statement = new_stmt
+                p.compliance.gdpr_compliant = True
+                notes.append(f"Fixed C001: Added explicit data residency statement for {residency_req}.")
+
+        # C002 Fix: Missing Cost Estimate
+        budget_req = requirements.get("constraints", {}).get("monthly_budget_usd")
+        if budget_req:
+             # Check provided?
+             needs_c002 = False
+             if not p.estimates: needs_c002 = True
+             elif not p.estimates.estimate_band: needs_c002 = True
              
-             if is_missing:
-                 # Default behavior: Add Risk
+             if needs_c002:
+                 # C002 Fix: Missing Cost Estimate
+                 from .models import CostEstimate
+                 band = "medium"
+                 if budget_req <= 10000: band = "low"
+                 elif budget_req > 30000: band = "high"
+                 
+                 est_val = int(budget_req * 0.9)
+                 est_range = (int(budget_req * 0.8), int(budget_req * 1.0))
+                 
+                 if not p.estimates:
+                     p.estimates = CostEstimate(
+                         monthly_cost_usd=est_val,
+                         estimate_range_usd_per_month=est_range,
+                         estimate_band=band,
+                         confidence="medium"
+                     )
+                 else:
+                     p.estimates.estimate_band = band
+                     if not p.estimates.monthly_cost_usd:
+                          p.estimates.monthly_cost_usd = est_val
+                     if not p.estimates.estimate_range_usd_per_month:
+                          p.estimates.estimate_range_usd_per_month = est_range
+                     p.estimates.confidence = "medium"
+                 
+                 notes.append(f"Fixed C002: Computed cost estimate band '{band}' with medium confidence based on budget.")
+
+        # --- Cache Logic (A002 + Strategy S2) ---
+        # Unified decision logic to avoid conflicting notes/risks
+        
+        should_inject_redis = False
+        cache_reason = ""
+        
+        # Check S2 Strategy Trigger
+        if mode == "strategy" and requirements:
+            traffic = requirements.get("traffic", {})
+            ratio = traffic.get("read_write_ratio", "") # e.g. "70:30"
+            if ratio:
+                try:
+                    read_part = int(ratio.split(":")[0])
+                    if read_part >= 70:
+                        should_inject_redis = True
+                        cache_reason = f"Applied Strategy S2: Injected Redis cache due to high read ratio ({ratio})."
+                except:
+                    pass
+        
+        # Check Manual Advice Trigger
+        if apply_advice and not should_inject_redis:
+            should_inject_redis = True
+            cache_reason = "Applied Advice A002: Injected Redis cache component."
+
+        # Apply Cache Logic
+        if is_cache_missing(p):
+             if should_inject_redis:
+                 # Inject Redis
+                 # Use generic helper or direct assignment
+                 if p.architecture.components.cache is None:
+                     p.architecture.components.cache = {"type": "redis", "notes": cache_reason}
+                 elif isinstance(p.architecture.components.cache, dict):
+                     p.architecture.components.cache["type"] = "redis"
+                     p.architecture.components.cache["notes"] = cache_reason
+                 else:
+                     p.architecture.components.cache.type = "redis"
+                     p.architecture.components.cache.notes = cache_reason
+                 
+                 notes.append(cache_reason)
+                 
+                 # Add Risk: Complexity
+                 from .models import Risk
+                 p.risks.append(Risk(
+                     title="Cache Complexity",
+                     mitigation="Introduction of Redis increases operational complexity. Ensure eviction policies and consistency checks."
+                 ))
+             else:
+                 # Default A002 Behavior: Warning only
                  from .models import Risk
                  p.risks.append(Risk(
                      title="Missing Cache Layer", 
                      mitigation="Cache unenabled: may impact read performance. Evaluate Redis for high-read paths."
                  ))
                  notes.append("Fixed A002: Added Risk entry for missing cache.")
-                 
-                 # Optional behavior: Apply Advice
-                 if apply_advice:
-                     # Inject Redis
-                     if cache is None:
-                         # Need to import ComponentDetails or construct dict
-                         p.architecture.components.cache = {"type": "redis", "notes": "Injected by evo patch --apply-advice"}
-                     elif isinstance(cache, dict):
-                         cache["type"] = "redis"
-                         cache["notes"] = "Injected by evo patch --apply-advice"
-                     elif hasattr(cache, "type"):
-                         cache.type = "redis"
-                         cache.notes = "Injected by evo patch --apply-advice"
-                         
-                     notes.append("Applied Advice A002: Injected Redis cache component.")
         
         if not notes:
             print("No patchable violations found or candidate already compliant.")
@@ -358,6 +464,364 @@ class EvoCore:
         print("Changes applied:")
         for n in notes:
             print(f"- {n}")
+
+    def recommend(self, session_path: str, include_patched: bool = False):
+        session_dir = Path(session_path)
+        audits_dir = session_dir / "audits"
+        candidates_dir = session_dir / "candidates"
+        req_file = session_dir / "requirements.json"
+        
+        if not audits_dir.exists():
+            print("No audit results found. Run 'evo audit' first.")
+            return
+
+        # Load Requirements
+        requirements = {}
+        if not req_file.exists():
+             req_file = Path("requirements.json")
+        if req_file.exists():
+            with open(req_file, "r", encoding="utf-8") as f: requirements = json.load(f)
+            
+        primary_goal = requirements.get("preferences", {}).get("primary_goal", "").lower()
+        
+        scored_candidates = []
+        
+        for audit_file in audits_dir.glob("audit_*.json"):
+            # Check patched filter
+            if not include_patched and "_patched" in audit_file.name: continue
+            
+            with open(audit_file, "r", encoding="utf-8") as f:
+                res = AuditResult(**json.load(f))
+                
+            # 1. Filter HARD Failures
+            has_hard = any(v.severity == Severity.HARD for v in res.violations)
+            if has_hard: continue
+            
+            # 2. Calculate Final Score
+            # final = score - 8 * (risk_count)
+            risk_count = sum(1 for v in res.violations if v.severity == Severity.RISK)
+            final_score = res.score - (8 * risk_count)
+            
+            # Get Strategy
+            strategy = "balanced"
+            cand_path = candidates_dir / f"cand_{res.candidate_id}.json"
+            if cand_path.exists():
+                with open(cand_path, "r", encoding="utf-8") as f:
+                    c_data = json.load(f)
+                    if "proposal" in c_data and c_data["proposal"].get("strategy"):
+                        strategy = c_data["proposal"]["strategy"]
+            
+            scored_candidates.append({
+                "id": res.candidate_id,
+                "strategy": strategy,
+                "audit_score": res.score,
+                "final_score": final_score,
+                "risk_count": risk_count,
+                "violations": [v.model_dump() for v in res.violations]
+            })
+            
+        if not scored_candidates:
+            print("No viable candidates found (all failed HARD constraints or no audits).")
+            return
+            
+        # 3. Sort Logic
+        # 3. Sort Logic with Tie-Breaker
+        # Primary Sort: Final Score (descending)
+        scored_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        
+        # Identify Top Tier (candidates within 0.5 of the top score)
+        top_score = scored_candidates[0]["final_score"]
+        top_tier = [c for c in scored_candidates if top_score - c["final_score"] < 0.5]
+        
+        winner = top_tier[0]
+        tie_broken = False
+        decision_reason = "Highest Score"
+        
+        if len(top_tier) > 1:
+            tie_broken = True
+            
+            # Helper to calculate complexity
+            def get_complexity(c_id):
+                try:
+                    path = candidates_dir / f"cand_{c_id}.json"
+                    with open(path, "r") as f: data = json.load(f)
+                    p_data = data.get("proposal", {})
+                    arch = p_data.get("architecture", {})
+                    comps = arch.get("components", {})
+                    
+                    score = 0
+                    # Cache
+                    c = comps.get("cache")
+                    if c and (isinstance(c, dict) and c.get("type") != "none" or hasattr(c, "type") and c.type != "none"):
+                        score += 1
+                    # Queue
+                    q = comps.get("queue")
+                    if q and (isinstance(q, dict) and q.get("type", "none") != "none" or getattr(q, "type", "none") != "none"):
+                         score += 1
+                    # Style
+                    style = arch.get("style", "").lower()
+                    if "microservices" in style or "event" in style:
+                         score += 2
+                    return score
+                except:
+                    return 0
+
+            # Helper for patch count (Change count) based on ID diff logic or metadata?
+            # Approximation: if patched, higher complexity/instability?
+            # User wants: "patched changes count" less is better.
+            # We can use '_patched' vs not, or check patch notes length.
+            # Let's use patch notes count.
+            def get_patch_count(c_id):
+                 if "_patched" not in c_id: return 0
+                 # Try to find diff file for true count?
+                 # Or load candidate and count patch_notes
+                 try:
+                    path = candidates_dir / f"cand_{c_id}.json"
+                    with open(path, "r") as f: data = json.load(f)
+                    return len(data.get("proposal", {}).get("patch_notes", []))
+                 except:
+                    return 0
+
+            # Helper for Confidence
+            def get_confidence_score(c_id):
+                # High=3, Med=2, Low=1
+                try:
+                    path = candidates_dir / f"cand_{c_id}.json"
+                    with open(path, "r") as f: data = json.load(f)
+                    est = data.get("proposal", {}).get("estimates", {})
+                    conf = est.get("confidence", "low").lower() if est else "low"
+                    if conf == "high": return 3
+                    if conf == "medium": return 2
+                    return 1
+                except:
+                    return 1
+
+            # Sort Top Tier
+            # 1. Goal Match (DESC) (primary_goal in strategy)
+            # 2. Complexity (ASC)
+            # 3. Patch Count (ASC)
+            # 4. Confidence (DESC)
+            
+            def tie_key(c):
+                goal_match = 1 if primary_goal and primary_goal in c["strategy"].lower() else 0
+                comp = get_complexity(c["id"])
+                p_count = get_patch_count(c["id"])
+                conf = get_confidence_score(c["id"])
+                # Return tuple for sort (desc items negated for asc sort if using a single direction? No, python sort stability)
+                # Python sort is stable. We can sort by keys in reverse order of importance?
+                # Actually, standard Tuple sort:
+                # (GoalMatch DESC, Complexity ASC, PatchCheck ASC, Confidence DESC)
+                # We can map ASC items to negative?
+                # complexity: lower is better -> negate? No, we want ASC. 
+                # Sort reverse=True implies bigger is better.
+                # So: GoalMatch (1>0), Complexity (Low>High => -Comp), PCount (-Count), Confidence (3>1)
+                return (goal_match, -comp, -p_count, conf)
+            
+            top_tier.sort(key=tie_key, reverse=True)
+            winner = top_tier[0]
+            decision_reason = "Tie-breaker (Goal > Complexity > Patches > Confidence)"
+        
+        # Load Winner Proposal
+        winner_path = candidates_dir / f"cand_{winner['id']}.json"
+        with open(winner_path, "r", encoding="utf-8") as f:
+            winner_cand = Candidate(**json.load(f))
+        p = winner_cand.proposal
+        
+        print(f"Recommended: {winner['id']} ({winner['strategy']}). Reason: {decision_reason}")
+        
+        # --- Build Sections ---
+        
+        # 1. Fit to Requirements
+        req_traffic = requirements.get("traffic", {})
+        req_slo = requirements.get("slo", {})
+        budget_req = requirements.get("constraints", {}).get("monthly_budget_usd", "Not provided")
+        
+        fit_lines = ["## Fit to Requirements"]
+        
+        # Peak RPS & SLO (Same as before)
+        req_rps = req_traffic.get("peak_rps", "N/A")
+        prop_rps = "N/A"
+        if p.experiments and p.experiments.load_test:
+            prop_rps = p.experiments.load_test.target_rps
+        fit_lines.append(f"- **Peak RPS**: {req_rps} -> Proposal load test target: {prop_rps}")
+        
+        req_p95 = req_slo.get("p95_latency_ms", "N/A")
+        prop_p95 = "N/A"
+        if p.slo and p.slo.p95_latency_ms: prop_p95 = p.slo.p95_latency_ms
+        fit_lines.append(f"- **SLO p95**: {req_p95}ms -> Proposal p95: {prop_p95}ms")
+        
+        # Data Residency (Detailed)
+        req_res = requirements.get("constraints", {}).get("data_residency", "N/A")
+        prop_res = "Not explicitly stated"
+        c_obj = p.compliance
+        if c_obj:
+            if hasattr(c_obj, "data_residency_statement") and c_obj.data_residency_statement:
+                 prop_res = c_obj.data_residency_statement
+            elif isinstance(c_obj, dict) and c_obj.get("data_residency_statement"):
+                 prop_res = c_obj.get("data_residency_statement")
+            elif hasattr(c_obj, "gdpr_compliant") and c_obj.gdpr_compliant:
+                 prop_res = "GDPR Compliant (Statement missing)"
+        fit_lines.append(f"- **Data Residency**: {req_res} -> Proposal statement: {prop_res}")
+        
+        # Budget (Advanced Display)
+        prop_cost = "not provided"
+        if p.estimates:
+            est = p.estimates
+            cost_val = getattr(est, "monthly_cost_usd", est.get("monthly_cost_usd") if isinstance(est, dict) else None)
+            band = getattr(est, "estimate_band", est.get("estimate_band") if isinstance(est, dict) else "medium")
+            rng = getattr(est, "estimate_range_usd_per_month", est.get("estimate_range_usd_per_month") if isinstance(est, dict) else None)
+            conf = getattr(est, "confidence", est.get("confidence") if isinstance(est, dict) else "low")
+            
+            if cost_val:
+                prop_cost = f"${cost_val}"
+                if rng: prop_cost += f" (Range: ${rng[0]}-${rng[1]})"
+                prop_cost += f" [{band} band, {conf} confidence]"
+            elif band:
+                prop_cost = f"{band} band (value missing, {conf} confidence)"
+
+        fit_lines.append(f"- **Budget**: {budget_req} -> Proposal cost: {prop_cost}")
+
+        # 2. Why this over #2
+        why_lines = ["", f"## Why this over #2"]
+        if len(scored_candidates) > 1:
+            runner_up = top_tier[1] if len(top_tier) > 1 else scored_candidates[1] 
+            # If not tie broken (i.e. top_tier was size 1), runner up is #2 in master list.
+            # If tie broken, runner up is #2 in top_tier.
+            
+            r_strat = runner_up.get("strategy", "unknown")
+            why_lines.append(f"Selected vs Runner-up (`{runner_up['id']}` - {r_strat}):")
+            
+            if tie_broken:
+                why_lines.append(f"**Tie-breaker Decision** (Scores within 0.5):")
+                why_lines.append(f"- **Criteria**: Goal Alignment > Low Complexity > Fewer Patches > High Confidence.")
+                why_lines.append(f"- **Winner Strategy**: {winner['strategy']} (Goal: {primary_goal or 'None'})")
+            else:
+                # Score Advantage
+                diff_risk = winner['risk_count'] - runner_up['risk_count']
+                if diff_risk < 0:
+                     why_lines.append(f"- **Lower Risk**: Has {abs(diff_risk)} fewer risks.")
+                else: 
+                     why_lines.append(f"- **Better Score**: {winner['final_score']} vs {runner_up['final_score']}")
+
+
+        # 3. What Was Patched
+        patch_lines = ["", "## What Was Patched"]
+        if "_patched" in winner['id']:
+            # Try to find diff file: diff_*_vs_{winner_id}.md
+            compare_dir = session_dir / "compare"
+            # Logic: winner['id'] is target. Base is winner['id'] without _patched.
+            # But wait, patch command might generate diff_<id>_vs_<id>_patched.
+            # Let's simple regular expression match or glob
+            diff_files = list(compare_dir.glob(f"diff_*_vs_{winner['id']}.md"))
+            
+            found_summary = False
+            if diff_files:
+                # Prioritize correct base if multiple? usually one.
+                target_diff = diff_files[0]
+                # Read content and extract Change Summary
+                with open(target_diff, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if "## Change Summary" in content:
+                        summary_part = content.split("## Change Summary")[1]
+                        changes = []
+                        for line in summary_part.split("\n"):
+                            line = line.strip()
+                            if line.startswith("##"): break
+                            if line.startswith("-"):
+                                changes.append(line)
+                                if len(changes) >= 5: break # Limit to 5
+                        
+                        if changes:
+                            patch_lines.extend(changes)
+                            patch_lines.append(f"\n[View Full Diff]({target_diff.name})")
+                            found_summary = True
+            
+            if not found_summary:
+                # Fallback to proposal patch_notes
+                if p.patch_notes:
+                     patch_lines.append("> [!WARNING]")
+                     patch_lines.append("> Diff file not found. Using internal patch notes.")
+                     for note in p.patch_notes:
+                         patch_lines.append(f"- {note}")
+                else:
+                     patch_lines.append("Patch applied, but no specific change summary found (No diff or notes).")
+        else:
+            patch_lines.append("No patch applied (Original Candidate).")
+
+        # 4. Trade-offs / Caveats
+        trade_lines = ["", "## Trade-offs / Caveats"]
+        caveats = []
+        
+        # Check components
+        cache = p.architecture.components.cache
+        if cache and (isinstance(cache, dict) and cache.get("type") == "redis" or getattr(cache, "type", "") == "redis"):
+             caveats.append("- **Redis**: Adds operational complexity (eviction policies, consistency).")
+        
+        queue = p.architecture.components.queue
+        if queue and (isinstance(queue, dict) and queue.get("type") != "none" or getattr(queue, "type", "none") != "none"):
+             caveats.append("- **Async Queue**: Introduces eventual consistency. Consumers must be idempotent.")
+             
+        # Check reliability
+        retries = p.architecture.reliability.retries
+        attempts = 0
+        if isinstance(retries, dict): attempts = int(retries.get("max_attempts", 0))
+        if attempts <= 1:
+             caveats.append("- **Low Retries**: Strict retry policy (1 attempt). May reduce success rate during blips; allow client-side handling.")
+        
+        # Check Timeouts
+        timeouts = p.architecture.reliability.timeouts_ms
+        client_to = timeouts.get("client", 0)
+        if client_to > 1000:
+             caveats.append(f"- **High Timeout**: Client timeout {client_to}ms is generous. Monitor for thread pool exhaustion.")
+
+        if not caveats:
+             caveats.append("- **Standard Architecture**: No specific high-risk trade-offs detected.")
+             
+        trade_lines.extend(caveats)
+
+        # Assemble Markdown
+        strategy_title = winner['strategy'].title()
+        md_lines = [
+            f"# Recommendation: {strategy_title}",
+            f"**Candidate ID**: `{winner['id']}`",
+            f"**Final Score**: {winner['final_score']} (Audit: {winner['audit_score']}, Risks: {winner['risk_count']})",
+            ""
+        ]
+        
+        md_lines.extend(fit_lines)
+        md_lines.extend(why_lines)
+        md_lines.extend(patch_lines)
+        md_lines.extend(trade_lines)
+        
+        # Rationale conclusion
+        md_lines.append("")
+        md_lines.append("## Strategic Alignment")
+        
+        if primary_goal:
+             if primary_goal in winner['strategy'].lower():
+                 match_msg = f"**Primary Goal**: `{primary_goal}`. Candidate strategy `{winner['strategy']}` aligns perfectly."
+             else:
+                 match_msg = f"**Primary Goal**: `{primary_goal}`. Best scoring option (Strategy `{winner['strategy']}` selected due to score/constraints)."
+        else:
+             match_msg = f"**Strategy**: `{winner['strategy']}`. (No primary goal constraints specified)."
+        
+        md_lines.append(match_msg)
+        
+        # 4. Outputs (JSON detailed)
+        rec_data = {
+            "session": session_dir.name,
+            "primary_goal": primary_goal,
+            "winner": winner,
+            "all_candidates": [
+                {k: v for k, v in c.items() if k != "violations"} for c in scored_candidates
+            ]
+        }
+        
+        with open(session_dir / "recommendation.json", "w", encoding="utf-8") as f:
+            json.dump(rec_data, f, indent=2)
+             
+        with open(session_dir / "recommendation.md", "w", encoding="utf-8") as f:
+            f.write("\n".join(md_lines))
 
     def diff(self, session_path: str, base_id: str, target_id: str):
         session_dir = Path(session_path)
@@ -508,6 +972,13 @@ class EvoCore:
             for r in rules_data['rules']:
                 rules.append(Rule(**r))
             ruleset = Ruleset(rules=rules)
+        
+        # Load Requirements for Contextual Rules
+        req_file = session_dir / "requirements.json"
+        requirements = {}
+        if not req_file.exists(): req_file = Path("requirements.json")
+        if req_file.exists():
+             with open(req_file, "r", encoding="utf-8") as f: requirements = json.load(f)
 
         # Load candidates from files
         candidates = []
@@ -590,14 +1061,60 @@ class EvoCore:
                 if isinstance(c, dict): return c.get("type", "none") == "none"
                 return c.type == "none"
 
+            # Flatten requirements for easy access or just pass dict
+            # We implement property access for 'requirements.constraints.data_residency' via a simple wrapper or dict access
+            # But python eval on dict works if we access keys, not dots.
+            # To support "requirements.constraints.data_residency", we can wrap it in a class or ensure rule uses dict access: requirements['constraints']['data_residency']
+            # OR we can wrap it in SimpleNamespace
+            from types import SimpleNamespace
+            
+            def dict_to_obj(d):
+                if not isinstance(d, dict): return d
+                return SimpleNamespace(**{k: dict_to_obj(v) for k, v in d.items()})
+            
+            req_obj = dict_to_obj(requirements) if requirements else None
+            
+            # Compliance Check Helper
+            # "proposal.compliance.data_residency_statement missing or mismatched"
+            # It's hard to express complex logic in rules string. 
+            # Simplest: ruleset uses a function `check_residency_match()`?
+            
+            def check_residency_mismatch():
+                 # Triggered if Requirement exists but Proposal fails
+                 if not req_obj or not hasattr(req_obj, "constraints"): return False
+                 target = getattr(req_obj.constraints, "data_residency", None)
+                 if not target or target == "none" or target == "N/A": return False
+                 
+                 # Check proposal
+                 if not proposal.compliance: return True
+                 stmt = proposal.compliance.data_residency_statement
+                 if not stmt: return True
+                 
+                 # Basic keyword match
+                 if target.lower() in ["eu", "europe"]:
+                      if not any(k in stmt.lower() for k in ["eu", "europe"]): return True
+                 return False
+
+            def check_budget_missing():
+                 if not req_obj or not hasattr(req_obj, "constraints"): return False
+                 budget = getattr(req_obj.constraints, "monthly_budget_usd", None)
+                 if not budget: return False
+                 
+                 if not proposal.estimates or not proposal.estimates.estimate_band: return True
+                 return False
+
             eval_context = {
                 "proposal": proposal,
+                "requirements": req_obj,
                 "acceptance_has_metrics": acceptance_has_metrics,
                 "get_retry_max_attempts": get_retry_max_attempts,
                 "get_timeout": get_timeout,
                 "queue_used_requires_risks": queue_used_requires_risks,
                 "has_meaningful_chaos_test": has_meaningful_chaos_test,
-                "is_cache_missing": is_cache_missing
+                "is_cache_missing": is_cache_missing,
+                # New helpers reducing complex logic in YAML
+                "check_residency_mismatch": check_residency_mismatch,
+                "check_budget_missing": check_budget_missing
             }
 
             if proposal:
@@ -748,8 +1265,190 @@ class EvoCore:
             
             report_lines.append("")
 
+        # Append Recommendation if available
+        rec_md = session_dir / "recommendation.md"
+        if rec_md.exists():
+            report_lines.append("")
+            report_lines.append("---")
+            report_lines.append("")
+            with open(rec_md, "r", encoding="utf-8") as f:
+                report_lines.append(f.read())
+
         report_file = session_dir / "report.md"
         with open(report_file, "w", encoding="utf-8") as f:
             f.write("\n".join(report_lines))
             
         print(f"Report generated at {report_file}")
+
+    def iterate(self, session_path: str, rounds: int = 3, population: int = 3, topk: int = 1, patch_mode: str = "strategy", include_advice: bool = False, reset: bool = False, allow_multi_patch: bool = False):
+        import shutil
+        import time
+        
+        session_dir = Path(session_path)
+        evo_dir = session_dir / "evolution"
+        
+        if reset and evo_dir.exists():
+            shutil.rmtree(evo_dir)
+            
+        evo_dir.mkdir(exist_ok=True)
+        (evo_dir / "rounds").mkdir(exist_ok=True)
+        
+        # Manifest
+        manifest = {
+            "session": session_path,
+            "rounds": rounds,
+            "population": population,
+            "config": {
+                "patch_mode": patch_mode,
+                "include_advice": include_advice,
+                "allow_multi_patch": allow_multi_patch
+            },
+            "start_time": datetime.now().isoformat()
+        }
+        with open(evo_dir / "manifest.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+            
+        trace = []
+        trace_md = ["# Evolution Trace", f"Started: {manifest['start_time']}", ""]
+        
+        current_champion_id = None
+        
+        print(f"Starting Evolution ({rounds} rounds)...")
+        
+        for r in range(rounds):
+            print(f"\n=== Round {r} ===")
+            round_dir = evo_dir / "rounds" / f"round_{r:02d}"
+            round_dir.mkdir(exist_ok=True)
+            
+            # 1. Generate (or Reuse)
+            if r == 0:
+                self.generate(session_path, n=population, reset=reset)
+            else:
+                pass
+
+            # 2. Audit & Recommend
+            inc_patch = (r > 0)
+            self.audit(session_path, include_patched=inc_patch)
+            self.recommend(session_path, include_patched=inc_patch)
+            
+            # 3. Capture Champion
+            rec_json = session_dir / "recommendation.json"
+            if not rec_json.exists():
+                print("Error: No recommendation found.")
+                break
+                
+            with open(rec_json, "r") as f:
+                rec_data = json.load(f)
+            
+            winner = rec_data["winner"]
+            win_id = winner["id"]
+            win_score = winner["final_score"]
+            win_risks = winner["risk_count"]
+            win_strat = winner["strategy"]
+            is_patched = "_patched" in win_id
+            
+            print(f"Round {r} Champion: {win_id} (Score: {win_score}, Risks: {win_risks})")
+            
+            # Trace Entry
+            trace_item = {
+                "round": r,
+                "champion": winner,
+                "timestamp": datetime.now().isoformat()
+            }
+            trace.append(trace_item)
+            
+            patched_status = " (patched)" if is_patched else ""
+            md_summary = f"**Round {r}**: Champion `{win_id}`{patched_status} - Score {win_score}, Risks {win_risks}, Strategy `{win_strat}`."
+            trace_md.append(md_summary)
+
+            # Copy Artifacts
+            shutil.copy2(rec_json, round_dir / "recommendation.json")
+            shutil.copy2(session_dir / "recommendation.md", round_dir / "recommendation.md")
+            if (session_dir / "audit_results.json").exists():
+                 shutil.copy2(session_dir / "audit_results.json", round_dir / "audits_index.json")
+            
+            all_cands = [c["id"] for c in rec_data["all_candidates"]]
+            with open(round_dir / "population.json", "w") as f:
+                json.dump(all_cands, f, indent=2)
+
+            # 4. Stop Condition / Patching
+            if r > 0 and win_id == current_champion_id and win_risks == 0:
+                print("Stable optimal champion found (Risks=0). Stopping early.")
+                trace_md.append("> **Stablized**: No further improvements needed.")
+                break
+            
+            current_champion_id = win_id
+            
+            # Prepare Next Round: Patch Champion
+            if r < rounds - 1:
+                # Logic: Check if we should patch
+                should_patch = True
+                
+                # Check 1: If risks == 0 and we are happy? User said "if risks=0 can stop", handled above.
+                # If risks > 0 we patch.
+                # Check 2: Double patching
+                if is_patched and not allow_multi_patch:
+                    print(f"Champion {win_id} is already patched. Skipping re-patch (allow_multi_patch=False).")
+                    trace_md.append("> **Skip Patch**: Champion already patched.")
+                    should_patch = False
+                
+                if should_patch:
+                    # Patching
+                    print(f"Patching champion {win_id}...")
+                    try:
+                        self.patch(session_path, win_id, apply_advice=include_advice, mode=patch_mode)
+                        
+                        # Identify new ID.
+                        # If base is raw, new is raw_patched.
+                        # If base is raw_patched (and allow_multi_patch=True), new is raw_patched_patched (depending on patch logic impl).
+                        # Let's verify patch logic. Assuming it appends _patched.
+                        patched_id = f"{win_id}_patched"
+                        
+                        # Generate Diff
+                        # Handle Diff Target naming:
+                        # Base: win_id
+                        # Target: patched_id
+                        print(f"Generating diff for {win_id} -> {patched_id}...")
+                        try:
+                            self.diff(session_path, win_id, patched_id)
+                            
+                            diff_json = session_dir / "compare" / f"diff_{win_id}_vs_{patched_id}.json"
+                            if diff_json.exists():
+                                 shutil.copy2(diff_json, round_dir / f"diff_{win_id}_vs_{patched_id}.json")
+                            md_file = session_dir / "compare" / f"diff_{win_id}_vs_{patched_id}.md"
+                            if md_file.exists(): 
+                                shutil.copy2(md_file, round_dir / f"diff_report.md")
+                            
+                            # Update Trace with Patch Details
+                            # Read patched candidate for notes
+                            p_cand_path = session_dir / "candidates" / f"cand_{patched_id}.json"
+                            patch_notes = []
+                            if p_cand_path.exists():
+                                with open(p_cand_path, "r", encoding="utf-8") as f:
+                                    cd = json.load(f)
+                                    patch_notes = cd.get("proposal", {}).get("patch_notes", [])
+                            
+                            trace_md.append(f"> **Patch Applied**: `{patched_id}` created.")
+                            if patch_notes:
+                                trace_md.append("> Rules fixed:")
+                                for note in patch_notes[:5]: # Limit 5
+                                    trace_md.append(f"> - {note}")
+                                if len(patch_notes) > 5: trace_md.append(f"> - ... ({len(patch_notes)-5} more)")
+                            
+                        except Exception as e:
+                            print(f"Diff generation skipped/failed: {e}")
+                            trace_md.append(f"> Patch applied but diff generation failed: {e}")
+
+                    except Exception as e:
+                        print(f"Patch failed: {e}")
+                        trace_md.append(f"> **Patch Failed**: {e}")
+        
+        # Finalize
+        with open(evo_dir / "trace.json", "w") as f:
+            json.dump(trace, f, indent=2)
+        with open(evo_dir / "trace.md", "w") as f:
+            f.write("\n".join(trace_md))
+            
+        print("\nEvolution completed.")
+        print(f"Final Champion: {current_champion_id}")
+        print(f"Trace saved to: {evo_dir / 'trace.md'}")

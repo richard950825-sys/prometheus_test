@@ -43,6 +43,9 @@ def generate_candidate(requirements: Dict[str, Any], attempt: int = 1, strategy_
        - if 'throughput-optimized': Async patterns, high target_rps, eventual consistency.
     2. Traffic: experiments.load_test.target_rps MUST depend on requirements.traffic.peak_rps (if present).
     3. Constraints: If 'data_residency' is specified, mention it in component notes.
+    4. Read/Write Ratio:
+       - Check 'requirements.traffic.read_write_ratio'.
+       - If read ratio >= 70% (e.g. "70:30", "80:20"), you MUST explicitly justify Cache decision in 'proposal.architecture.components.cache.notes', even if you decide NOT to use a cache (type='none').
     
     Output Schema:
     The output must be a single strict JSON object (NOT a list) matching this structure:
@@ -52,6 +55,7 @@ def generate_candidate(requirements: Dict[str, Any], attempt: int = 1, strategy_
       "proposal": {{
         "title": "string",
         "summary": "string",
+        "critical_paths": ["string (e.g. 'User Login path', 'Search Product path')"],
         "strategy": "{strategy_hint if strategy_hint else 'balanced'}",
         "architecture": {{
           "style": "monolith|modular-monolith|microservices|event-driven",
