@@ -1,0 +1,44 @@
+{
+    "suite_id": "rag_mini",
+    "tasks": [
+        {
+            "task_id": "t1",
+            "question": "What is the capital of France?",
+            "docs": [
+                {
+                    "doc_id": "d1",
+                    "text": "France's capital is Paris."
+                },
+                {
+                    "doc_id": "d2",
+                    "text": "Berlin is the capital of Germany."
+                }
+            ],
+            "expected": {
+                "must_contain": [
+                    "Paris"
+                ],
+                "citations_required": true
+            }
+        },
+        {
+            "task_id": "t2",
+            "question": "Name a prime number between 10 and 20 and cite the doc.",
+            "docs": [
+                {
+                    "doc_id": "d1",
+                    "text": "Prime numbers between 10 and 20 include 11, 13, 17, 19."
+                }
+            ],
+            "expected": {
+                "must_contain_any": [
+                    "11",
+                    "13",
+                    "17",
+                    "19"
+                ],
+                "citations_required": true
+            }
+        }
+    ]
+}

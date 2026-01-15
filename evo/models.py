@@ -8,81 +8,81 @@ class Severity(str, Enum):
     RISK = "RISK"
     ADVICE = "ADVICE"
 
-# --- Architecture v2 Models ---
 
-class ComponentDetails(BaseModel):
+# --- Workflow IR Models ---
+
+class Agent(BaseModel):
+    name: str
+    role: str
+    model: str
+    tools: List[str] = Field(default_factory=list)
+    budget: Dict[str, Union[int, float]] = Field(default_factory=dict) # e.g. {"max_turns": 6}
+
+class Step(BaseModel):
+    id: str
+    agent: str
+    action: str # plan|retrieve|synthesize|verify|code|review|decide
+    inputs: List[str] = Field(default_factory=list)
+    outputs: List[str] = Field(default_factory=list)
+    guards: Dict[str, Union[int, float, str]] = Field(default_factory=dict)
+
+class Fallback(BaseModel):
+    when: str
+    do: str
+
+class WorkflowBudget(BaseModel):
+    max_total_turns: int
+    max_total_tool_calls: int
+    max_total_tokens: int
+
+class Controls(BaseModel):
+    budget: WorkflowBudget
+    stop_conditions: List[str] = Field(default_factory=list)
+    fallbacks: List[Fallback] = Field(default_factory=list)
+
+class ArchitectureTest(BaseModel):
+    name: str
     type: str
-    instances: Optional[int] = None
-    notes: Optional[str] = None
+    threshold: float
 
-class Components(BaseModel):
-    api: ComponentDetails
-    db: ComponentDetails
-    cache: Optional[ComponentDetails] = None
-    queue: Optional[ComponentDetails] = None
+class WorkflowAcceptance(BaseModel):
+    tests: List[ArchitectureTest]
 
-class ReliabilityConfig(BaseModel):
-    timeouts_ms: Dict[str, int] # e.g. {"client": 1000, "server": 5000}
-    retries: Dict[str, Union[int, str]] # e.g. {"max_attempts": 3, "backoff": "exponential"}
-    idempotency: Literal["required", "recommended", "not_supported"]
-
-class Architecture(BaseModel):
-    style: Literal["monolith", "modular-monolith", "microservices", "event-driven"]
-    components: Components
-    reliability: ReliabilityConfig
-
-class SLO(BaseModel):
-    p95_latency_ms: int
-    error_rate: float
-    availability: float
-
-class Constraint(BaseModel):
-    metric: str
-    op: str
-    threshold: Union[int, float]
-
-class Acceptance(BaseModel):
-    hard_constraints: List[Constraint]
-
-class ExperimentConfig(BaseModel):
-    tool: str
-    duration_s: int
-    target_rps: Optional[int] = None
-
-class ChaosTest(BaseModel):
-    fault: str
-    target: str
-    duration_s: int
-
-class Experiments(BaseModel):
-    load_test: ExperimentConfig
-    chaos_test: List[ChaosTest]
-
-class Risk(BaseModel):
+class WorkflowIR(BaseModel):
     title: str
-    mitigation: str
+    goal: str
+    agents: List[Agent]
+    steps: List[Step]
+    controls: Controls
+    acceptance: WorkflowAcceptance
+    # Compatible fields for audit fallback
+    summary: Optional[str] = None
+    normalization_notes: List[str] = Field(default_factory=list)
+    patch_notes: List[str] = Field(default_factory=list)
+
+# --- Legacy Architecture v2 Models (kept for reference/mixins if needed) ---
+# (Keeping Architecture/Proposal classes if we need smooth transition, 
+#  but WorkflowIR replaces Proposal mainly)
 
 class Compliance(BaseModel):
     gdpr_compliant: bool
     data_residency_statement: Optional[str] = None
-    notes: Optional[str] = None
 
 class CostEstimate(BaseModel):
-    monthly_cost_usd: Optional[int] = None
-    estimate_range_usd_per_month: Optional[Tuple[int, int]] = None
-    estimate_band: Literal["low", "medium", "high"] = "medium"
-    confidence: Literal["low", "medium", "high"] = "low"
-    notes: Optional[str] = None
+    monthly_cost_usd: Optional[float] = None
+    estimate_range_usd_per_month: Optional[Union[Tuple[float, float], List[float]]] = None
+    estimate_band: Optional[str] = None
+    confidence: Optional[str] = None
 
 class Proposal(BaseModel):
+    # Reduced proposal just in case legacy code dep
     title: str
     summary: str
-    critical_paths: List[str] = Field(default_factory=list)
-    architecture: Architecture
-    slo: SLO
-    acceptance: Acceptance
-    experiments: Experiments
-    risks: List[Risk]
+    architecture: Any = None
+    slo: Any = None
+    acceptance: Any = None
+    experiments: Any = None
+    risks: Any = None
     normalization_notes: List[str] = Field(default_factory=list)
     patch_notes: List[str] = Field(default_factory=list)
     strategy: Optional[str] = None
@@ -104,7 +104,10 @@ class Ruleset(BaseModel):
 class Candidate(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=datetime.now)
-    # v2 structure
+    strategy: Optional[str] = None
+    # v3 structure
+    workflow_ir: Optional[WorkflowIR] = None
+    # v2 structure (deprecated)
     proposal: Optional[Proposal] = None
     # v1 legacy support
     content: Optional[Dict[str, Any]] = None
@@ -125,3 +128,20 @@ class SessionMetadata(BaseModel):
     name: str
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+# --- Metrics Models ---
+
+class Metric(BaseModel):
+    metric_key: str
+    value: Union[int, float, bool, str]
+    unit: Optional[str] = None
+    source: Literal["proposal", "static_estimate", "evidence"]
+    confidence: Literal["low", "medium", "high"]
+    evidence_refs: List[str] = Field(default_factory=list)
+
+class MetricsOutput(BaseModel):
+    candidate_id: str
+    generated_at: datetime = Field(default_factory=datetime.now)
+    metrics: List[Metric]
+    notes: List[str] = Field(default_factory=list)
+    schema_version: str = "metrics_v1"

@@ -1,0 +1,60 @@
+rules:
+  - id: "W001"
+    description: "Must have at least 2 agents (Planner + Critic)"
+    severity: "HARD"
+    condition: "len(candidate.workflow_ir.agents) < 2"
+    fix_suggestion: "Add a 'Critic' or 'Reviewer' agent to validation."
+
+  - id: "W002"
+    description: "Must have at least 3 steps"
+    severity: "HARD"
+    condition: "len(candidate.workflow_ir.steps) < 3"
+    fix_suggestion: "Break down the workflow into more granular steps (Plan -> Execute -> Verify)."
+
+  - id: "W003"
+    description: "Must define strict budget controls"
+    severity: "HARD"
+    condition: "not candidate.workflow_ir.controls.budget or not candidate.workflow_ir.controls.budget.max_total_turns"
+    fix_suggestion: "Define 'controls.budget' with max_total_turns/tokens."
+
+  - id: "W004"
+    description: "Stop conditions must include budget safety"
+    severity: "HARD"
+    condition: "'budget_exceeded' not in candidate.workflow_ir.controls.stop_conditions"
+    fix_suggestion: "Add 'budget_exceeded' to stop_conditions."
+
+  - id: "W005"
+    description: "Acceptance tests missing standard metrics"
+    severity: "RISK"  # Relaxed from HARD for testing
+    condition: "not any(t.name == 'faithfulness' for t in candidate.workflow_ir.acceptance.tests)"
+    fix_suggestion: "Add 'faithfulness' to acceptance.tests."
+
+  - id: "W006"
+    description: "Missing verify step"
+    severity: "RISK"
+    condition: "not any(s.action == 'verify' for s in candidate.workflow_ir.steps)"
+    fix_suggestion: "Add a 'verify' step after synthesis."
+
+  - id: "W007"
+    description: "Missing fallbacks"
+    severity: "RISK"
+    condition: "not candidate.workflow_ir.controls.fallbacks"
+    fix_suggestion: "Add fallback handler for 'retrieval_empty' or 'verification_failed'."
+
+  - id: "W008"
+    description: "Budget too loose"
+    severity: "RISK"
+    condition: "candidate.workflow_ir.controls.budget.max_total_turns > 50"
+    fix_suggestion: "Reduce max_total_turns to 50 or less."
+
+  - id: "W009"
+    description: "Missing Critic role"
+    severity: "RISK"
+    condition: "not any('critic' in a.name.lower() or 'review' in a.name.lower() for a in candidate.workflow_ir.agents)"
+    fix_suggestion: "Rename an agent to 'Critic' or add one."
+
+  - id: "W010"
+    description: "Recommend self-correction in prompts"
+    severity: "ADVICE"
+    condition: "True" # Always advice for now
+    fix_suggestion: "Ensure agent prompts include self-correction instructions."

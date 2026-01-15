@@ -27,72 +27,53 @@ def generate_candidate(requirements: Dict[str, Any], attempt: int = 1, strategy_
     model_id = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     prompt = f"""
-    You are an expert system architect.
-    Based on the following requirements, generate ONE distinct architecture candidate proposal in valid JSON format.
+    You are an expert AI system architect.
+    Based on the following requirements, generate ONE distinct Workflow IR candidate in valid JSON format.
     
     STRATEGY: {strategy_hint if strategy_hint else "Balanced"}
-    (You MUST optimize the design for this strategy.)
+    (You MUST optimize the workflow design for this strategy.)
     
     Requirements:
     {json.dumps(requirements, indent=2)}
     
-    Constraints & Logic:
-    1. Strategy '{strategy_hint}':
-       - if 'cost-optimized': Minimize instances, use 'none' for cache/queue if feasible, focus on open source.
-       - if 'reliability-optimized': MUST have cache and queue, multiple instances, strict timeouts (idempotency required).
-       - if 'throughput-optimized': Async patterns, high target_rps, eventual consistency.
-    2. Traffic: experiments.load_test.target_rps MUST depend on requirements.traffic.peak_rps (if present).
-    3. Constraints: If 'data_residency' is specified, mention it in component notes.
-    4. Read/Write Ratio:
-       - Check 'requirements.traffic.read_write_ratio'.
-       - If read ratio >= 70% (e.g. "70:30", "80:20"), you MUST explicitly justify Cache decision in 'proposal.architecture.components.cache.notes', even if you decide NOT to use a cache (type='none').
+    Strategies:
+    - if 'cost-optimized': Minimize tool usage, use cheaper models (gemini-flash), stricter budgets, fewer steps.
+    - if 'reliability-optimized': Add 'verify' steps, 'critic' agents, robust fallbacks, higher max_retries.
+    - if 'throughput-optimized': Maximize token budget, fewer verification steps, maximize parallel actions if potential.
     
     Output Schema:
-    The output must be a single strict JSON object (NOT a list) matching this structure:
+    The output must be a single strict JSON object matching this structure:
     {{
       "id": "string (unique)",
       "created_at": "ISO datetime",
-      "proposal": {{
+      "strategy": "{strategy_hint if strategy_hint else 'balanced'}",
+      "workflow_ir": {{
         "title": "string",
-        "summary": "string",
-        "critical_paths": ["string (e.g. 'User Login path', 'Search Product path')"],
-        "strategy": "{strategy_hint if strategy_hint else 'balanced'}",
-        "architecture": {{
-          "style": "monolith|modular-monolith|microservices|event-driven",
-          "components": {{
-            "api": {{ "type": "http|grpc", "instances": int, "notes": "string" }},
-            "db": {{ "type": "postgres|mysql|dynamodb|mongodb", "notes": "string" }},
-            "cache": {{ "type": "redis|none|memcached", "notes": "string" }},
-            "queue": {{ "type": "kafka|rabbitmq|sqs|none", "notes": "string" }}
-          }},
-          "reliability": {{
-            "timeouts_ms": {{ "client": int, "server": int }},
-            "retries": {{ "max_attempts": int, "backoff": "none|fixed|exponential" }},
-            "idempotency": "required|recommended|not_supported"
+        "goal": "string",
+        "agents": [
+          {{ "name": "planner|critic|coder", "role": "string", "model": "gemini-2.5-flash", "tools": ["retrieval","code"], "budget": {{ "max_turns": int }} }}
+        ],
+        "steps": [
+          {{
+            "id": "S1", "agent": "string", "action": "plan|retrieve|synthesize|verify|code",
+            "inputs": ["string"], "outputs": ["string"],
+            "guards": {{ "max_retries": 1, "timeout_s": 60 }}
           }}
-        }},
-        "slo": {{
-          "p95_latency_ms": int,
-          "error_rate": float,
-          "availability": float
+        ],
+        "controls": {{
+          "budget": {{ "max_total_turns": 20, "max_total_tool_calls": 50, "max_total_tokens": 100000 }},
+          "stop_conditions": ["answer_verified", "budget_exceeded"],
+          "fallbacks": [ {{ "when": "retrieval_empty", "do": "broaden_query" }} ]
         }},
         "acceptance": {{
-          "hard_constraints": [
-            {{ "metric": "latency.p95_ms", "op": "<=", "threshold": int }},
-            {{ "metric": "errors.rate", "op": "<=", "threshold": float }}
-          ]
-        }},
-        "experiments": {{
-          "load_test": {{ "tool": "k6", "duration_s": int, "target_rps": int }},
-          "chaos_test": [ {{ "fault": "string", "target": "string", "duration_s": int }} ]
-        }},
-        "risks": [ {{ "title": "string", "mitigation": "string" }} ]
+          "tests": [ {{ "name": "faithfulness", "type": "rag", "threshold": 0.8 }} ]
+        }}
       }}
     }}
     
-    SELF-CORRECTION CHECKLIST (MUST VERIFY):
-    1. proposal.slo MUST align with requirements.slo.
-    2. proposal.strategy MUST be '{strategy_hint if strategy_hint else 'balanced'}' (lowercase).
+    SELF-CORRECTION CHECKLIST:
+    1. workflow_ir.agents MUST have at least 1 agent.
+    2. workflow_ir.steps MUST flow logically.
     3. JSON Format MUST be valid.
     
     Do not include markdown formatting.
@@ -111,33 +92,39 @@ def generate_candidate(requirements: Dict[str, Any], attempt: int = 1, strategy_
         if not raw_text:
             raise ValueError("Empty response from Gemini")
 
-        # Clean potential markdown (though mime_type helps)
+        # Clean potential markdown
         clean_text = re.sub(r"```json\s*|\s*```", "", raw_text).strip()
         data = json.loads(clean_text)
         
         # Validation
-        # Check if it's a list by mistake
         if isinstance(data, list):
             data = data[0]
             
-        # Pydantic Validate via Candidate (validation of Proposal nested field happens here)
-        # Note: data should have 'id', 'created_at', 'proposal' keys as per schema.
-        # But Candidate model has 'proposal' field. 
-        # If Gemini returns the full object structure including 'id', we can try to parse it.
-        # However, to be safe, we can reconstruct Candidate.
+        from .models import WorkflowIR
         
-        # Let's try to validate the Inner Proposal first if it exists
-        if "proposal" not in data:
-            raise ValueError("Missing 'proposal' field in JSON.")
+        if "workflow_ir" not in data:
+            # Fallback check if LLM returned just the inner object
+            if "agents" in data and "steps" in data:
+                wf_obj = WorkflowIR(**data)
+                # Wrap it
+                candidate = Candidate(
+                    id=f"gen_{int(datetime.now().timestamp())}",
+                    created_at=datetime.now(),
+                    strategy=strategy_hint,
+                    workflow_ir=wf_obj
+                )
+                return candidate
+            raise ValueError("Missing 'workflow_ir' field in JSON.")
             
-        proposal_obj = Proposal(**data["proposal"]) # This will raise ValidationError if missing fields
+        wf_obj = WorkflowIR(**data["workflow_ir"])
         
         # Construct Candidate
         candidate = Candidate(
             id=data.get("id") or f"gen_{int(datetime.now().timestamp())}",
             created_at=datetime.now(),
-            proposal=proposal_obj,
-            content=data.get("content") # pass through if generated
+            strategy=data.get("strategy") or strategy_hint,
+            workflow_ir=wf_obj,
+            proposal=None # Pivot away from proposal
         )
         return candidate
 
