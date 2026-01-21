@@ -87,6 +87,42 @@ def recommend(
     core.recommend(session, include_patched)
 
 @app.command()
+def forge_run(
+    session: str = typer.Option(..., help="Path to session directory"),
+    rounds: int = typer.Option(2, help="Number of forge rounds"),
+    population: int = typer.Option(3, help="Population size per round"),
+    patch_mode: str = typer.Option("strategy", help="Patch mode: minimal, aggressive, strategy"),
+    include_advice: bool = typer.Option(False, help="Include ADVICE level patches"),
+    reset: bool = typer.Option(False, help="Reset evolution history"),
+    suite: Optional[str] = typer.Option(None, help="Name of evaluation suite to run"),
+    replications: int = typer.Option(1, help="Number of replications per candidate run"),
+    seed: Optional[int] = typer.Option(None, help="Random seed for replicated runs"),
+    perturb: bool = typer.Option(False, help="Apply deterministic perturbations per run"),
+    budget_sweep: Optional[str] = typer.Option(None, help="Budget sweep grid (e.g. tool_calls=2,4;tokens=80,160)"),
+    perturb_sweep: Optional[str] = typer.Option(None, help="Perturb sweep grid (e.g. miss_prob=0.0,0.1;noise_docs=0,1)"),
+):
+    """Run explicit forge state machine from Node A to G."""
+    try:
+        suite_id = suite or "rag_mini"
+        core.forge_run(
+            session,
+            rounds=rounds,
+            population=population,
+            patch_mode=patch_mode,
+            include_advice=include_advice,
+            reset=reset,
+            suite_id=suite_id,
+            replications=replications,
+            seed=seed,
+            perturb=perturb,
+            budget_sweep=budget_sweep,
+            perturb_sweep=perturb_sweep,
+        )
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+@app.command()
 def iterate(
     session: str = typer.Option(..., help="Path to session directory"),
     rounds: int = typer.Option(3, help="Number of evolution rounds"),
@@ -96,11 +132,31 @@ def iterate(
     include_advice: bool = typer.Option(False, help="Include ADVICE level patches"),
     reset: bool = typer.Option(False, help="Reset evolution history"),
     allow_multi_patch: bool = typer.Option(False, help="Allow patching already patched candidates"),
-    suite: Optional[str] = typer.Option(None, help="Name of evaluation suite to run")
+    suite: Optional[str] = typer.Option(None, help="Name of evaluation suite to run"),
+    replications: int = typer.Option(1, help="Number of replications per candidate run"),
+    seed: Optional[int] = typer.Option(None, help="Random seed for replicated runs"),
+    perturb: bool = typer.Option(False, help="Apply deterministic perturbations per run"),
+    budget_sweep: Optional[str] = typer.Option(None, help="Budget sweep grid (e.g. tool_calls=2,4;tokens=80,160)"),
+    perturb_sweep: Optional[str] = typer.Option(None, help="Perturb sweep grid (e.g. miss_prob=0.0,0.1;noise_docs=0,1)"),
 ):
     """Run iterative evolution engine."""
     try:
-        core.iterate(session, rounds, population, topk, patch_mode, include_advice, reset, allow_multi_patch, suite=suite)
+        core.iterate(
+            session,
+            rounds,
+            population,
+            topk,
+            patch_mode,
+            include_advice,
+            reset,
+            allow_multi_patch,
+            suite=suite,
+            replications=replications,
+            seed=seed,
+            perturb=perturb,
+            budget_sweep=budget_sweep,
+            perturb_sweep=perturb_sweep,
+        )
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
@@ -108,13 +164,14 @@ def iterate(
 @app.command()
 def metrics(
     session: str = typer.Option(..., help="Path to session directory"),
-    include_patched: bool = typer.Option(False, help="Include patched candidates")
+    include_patched: bool = typer.Option(False, help="Include patched candidates"),
+    suite: str = typer.Option("rag_mini", help="Name of evaluation suite")
 ):
     """
     Generate outputs/metrics.json for candidates.
     """
     try:
-        core.generate_metrics(session, include_patched=include_patched)
+        core.generate_metrics(session, include_patched=include_patched, suite_id=suite)
     except Exception as e:
          typer.echo(f"Error: {e}", err=True)
          raise typer.Exit(code=1)
@@ -123,11 +180,25 @@ def metrics(
 def run(
     session: str = typer.Option(..., help="Path to session directory"),
     suite: str = typer.Option("rag_mini", help="Name of evaluation suite"),
-    include_patched: bool = typer.Option(False, help="Include patched candidates")
+    include_patched: bool = typer.Option(False, help="Include patched candidates"),
+    replications: int = typer.Option(1, help="Number of replications per candidate run"),
+    seed: Optional[int] = typer.Option(None, help="Random seed for replicated runs"),
+    perturb: bool = typer.Option(False, help="Apply deterministic perturbations per run"),
+    budget_sweep: Optional[str] = typer.Option(None, help="Budget sweep grid (e.g. tool_calls=2,4;tokens=80,160)"),
+    perturb_sweep: Optional[str] = typer.Option(None, help="Perturb sweep grid (e.g. miss_prob=0.0,0.1;noise_docs=0,1)"),
 ):
     """Run simulated evaluation suite on candidates."""
     core = EvoCore()
-    core.run_suite(session, suite, include_patched)
+    core.run_suite(
+        session,
+        suite,
+        include_patched,
+        replications=replications,
+        seed=seed,
+        perturb=perturb,
+        budget_sweep=budget_sweep,
+        perturb_sweep=perturb_sweep,
+    )
 
 @app.command()
 def index(

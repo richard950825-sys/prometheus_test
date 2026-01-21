@@ -58,3 +58,9 @@ rules:
     severity: "ADVICE"
     condition: "True" # Always advice for now
     fix_suggestion: "Ensure agent prompts include self-correction instructions."
+
+  - id: "W011"
+    description: "Injection tasks require verify or critic"
+    severity: "RISK"
+    condition: "suite_has_injection and (not any(s.action == 'verify' for s in candidate.workflow_ir.steps) or not any('critic' in a.name.lower() or 'review' in a.name.lower() for a in candidate.workflow_ir.agents))"
+    fix_suggestion: "Add a verify step or a critic/reviewer agent for prompt-injection defenses."

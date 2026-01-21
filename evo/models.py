@@ -31,14 +31,16 @@ class Fallback(BaseModel):
     do: str
 
 class WorkflowBudget(BaseModel):
-    max_total_turns: int
-    max_total_tool_calls: int
-    max_total_tokens: int
-
+    max_total_turns: int = 10
+    max_total_tool_calls: int = 20
+    max_total_tokens: int = 4000
+    
 class Controls(BaseModel):
     budget: WorkflowBudget
     stop_conditions: List[str] = Field(default_factory=list)
     fallbacks: List[Fallback] = Field(default_factory=list)
+    budget_policy: Optional[Dict[str, Any]] = None
+    budget_tiers: Optional[List[Dict[str, Any]]] = None
 
 class ArchitectureTest(BaseModel):
     name: str
@@ -59,6 +61,16 @@ class WorkflowIR(BaseModel):
     summary: Optional[str] = None
     normalization_notes: List[str] = Field(default_factory=list)
     patch_notes: List[str] = Field(default_factory=list)
+
+# --- Lightweight Proposal Helpers ---
+class Constraint(BaseModel):
+    metric: str
+    op: str
+    threshold: float
+
+class Risk(BaseModel):
+    title: str
+    mitigation: str
 
 # --- Legacy Architecture v2 Models (kept for reference/mixins if needed) ---
 # (Keeping Architecture/Proposal classes if we need smooth transition, 
@@ -123,6 +135,7 @@ class AuditResult(BaseModel):
     passed: bool
     violations: List[Violation]
     score: float
+    notes: List[str] = Field(default_factory=list)
 
 class SessionMetadata(BaseModel):
     name: str
