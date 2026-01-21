@@ -167,19 +167,43 @@ This enables targeted regression and replay against worst-case sweep points.
 
 ```
 .
-??? evo/
-?   ??? forge/                # ForgeState + state machine
-?   ??? windtunnel/            # Spec/report contracts
-?   ??? oracle/                # Windtunnel runner
-?   ??? gates.py               # Release gates
-?   ??? metrics.py             # Metrics extraction
-?   ??? ...
-??? eval_suites/
-??? sessions/                  # session outputs (not committed)
-??? gate_rules.yaml
-??? ruleset.yaml
-??? ruleset_workflow.yaml
-??? README.md
+├── evo/                       # Core package
+│   ├── forge/                 # ForgeState + explicit state machine
+│   │   ├── state.py            # ForgeState schema (blackboard)
+│   │   └── machine.py          # Node A-G routing + verification loop
+│   ├── windtunnel/             # Spec/report contracts
+│   │   ├── spec.py             # WindTunnelSpec (inputs)
+│   │   └── report.py           # WindTunnelReport (outputs)
+│   ├── oracle/                 # Windtunnel simulator + sweeps
+│   │   └── rag_mini_runner.py  # Runs suite + aggregates + failure stats
+│   ├── gates.py                # Release gate evaluation + baselines
+│   ├── metrics.py              # Metrics extraction from evidence
+│   ├── audit_engine.py         # Ruleset audit + Oracle gate checks
+│   ├── patching.py             # Patch logic for workflows/proposals
+│   ├── recommend.py            # Recommendation + gate-aware output
+│   ├── generate.py             # Candidate generation
+│   ├── iterate.py              # Legacy iterate wrapper
+│   ├── core.py                 # Core API used by CLI
+│   ├── main.py                 # Typer CLI entry
+│   └── models.py               # Pydantic models (WorkflowIR, Metrics, etc.)
+├── eval_suites/                # Windtunnel suite definitions (JSON)
+├── sessions/                   # Per-run outputs (not committed)
+├── gate_rules.yaml             # Release gate thresholds
+├── ruleset.yaml                # Proposal ruleset (legacy)
+├── ruleset_workflow.yaml       # Workflow ruleset (current)
+└── README.md
+```
+
+Key runtime outputs (generated under `sessions/<name>/`):
+
+```
+sessions/<name>/
+├── forge_state.json            # ForgeState blackboard snapshot
+├── state_machine/trace.md      # Node routing trace
+├── evidence/workflow/<id>/     # Runs, sweeps, windtunnel report/spec
+├── gates/                      # Baseline + last gate result
+├── failure_bundles/            # Replayable failure bundles
+└── recommendation.*            # Final recommendation (when gates pass)
 ```
 
 ---
